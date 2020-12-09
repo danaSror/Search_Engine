@@ -4,53 +4,80 @@ from parser_module import Parse
 from indexer import Indexer
 from searcher import Searcher
 import utils
+import pandas as pd
+from posting_merge import PostingsMerge
+from tqdm import tqdm
 
-
-def run_engine():
+def run_engine(config):
     """
 
+    :param config:
     :return:
     """
     number_of_documents = 0
 
-    config = ConfigClass()
     r = ReadFile(corpus_path=config.get__corpusPath())
-    p = Parse()
+    p = Parse(config.toStem)
     indexer = Indexer(config)
+    paruet_list = r.read_all_parquet()
+    for list in paruet_list:
+        #for i in tqdm(range(0,len(list))): # for every doc
+        for i in range(0, len(list)):  # for every doc
+            # parse the document
+            parsed_document = p.parse_doc(list[i])
+            if parsed_document is None:
+                continue
+            number_of_documents += 1
 
-    documents_list = r.read_file(file_name='sample3.parquet')
-    # Iterate over every document in the file
-    for idx, document in enumerate(documents_list):
-        # parse the document
-        parsed_document = p.parse_doc(document)
-        number_of_documents += 1
-        # index the document data
-        indexer.add_new_doc(parsed_document)
-    print('Finished parsing and indexing. Starting to export files')
+            # index the document data
+            indexer.add_new_doc(parsed_document)
 
-    utils.save_obj(indexer.inverted_idx, "inverted_idx")
-    utils.save_obj(indexer.postingDict, "posting")
+    #print('Finished parsing and indexing. Starting to export files')
 
+    indexer.save_postings()     # saves the remaining posting file .
+    PostingsMerge(indexer).chunks_merging()
+    utils.save_dict_as_pickle(indexer.inverted_idx, "inverted_idx", config.get_out_path())
 
-def load_index():
-    print('Load inverted index')
-    inverted_index = utils.load_obj("inverted_idx")
+def load_index(out_path=''):
+    """
+    load inverted index
+    :param out_path:
+    :return:
+    """
+    #print('Load inverted index and document dictionary')
+    inverted_index = utils.load_pickle_as_dict("inverted_idx", out_path)
+    #print('Done')
     return inverted_index
 
 
-def search_and_rank_query(query, inverted_index, k):
-    p = Parse()
+def search_and_rank_query(query, inverted_index, k, config=None):
+    """
+    This function search for relevant docs according to the query and rank them
+    :param query:
+    :param inverted_index:
+    :param k:
+    :param config:
+    :return:
+    """
+    p = Parse(config.toStem)
     query_as_list = p.parse_sentence(query)
-    searcher = Searcher(inverted_index)
+    searcher = Searcher(inverted_index, config)
     relevant_docs = searcher.relevant_docs_from_posting(query_as_list)
     ranked_docs = searcher.ranker.rank_relevant_doc(relevant_docs)
     return searcher.ranker.retrieve_top_k(ranked_docs, k)
 
 
-def main():
-    run_engine()
-    query = input("Please enter a query: ")
-    k = int(input("Please enter number of docs to retrieve: "))
-    inverted_index = load_index()
-    for doc_tuple in search_and_rank_query(query, inverted_index, k):
-        print('tweet id: {}, score (unique common words with query): {}'.format(doc_tuple[0], doc_tuple[1]))
+def main(corpus_path, output_path, stemming, queries, num_docs_to_retrieve):
+    if queries is not None:
+        config = ConfigClass(corpus_path, output_path, stemming)
+        run_engine(config)
+        query_list = utils.load_queries_list(queries)
+        inverted_index = load_index(output_path)
+        for idx in range(1, len(query_list)+1):
+            print("query {}:".format(idx))
+            for doc_tuple in search_and_rank_query(query_list[idx-1], inverted_index, k=num_docs_to_retrieve, config=config):
+                print('\ttweet id: {} | score : {} '
+                      .format(doc_tuple[0] , doc_tuple[1]))
+
+
+
